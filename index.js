@@ -380,7 +380,7 @@ async function run() {
         try {
           const { cityId, zoneId, itemWeight } = req.body;
 
-          console.log(req.body)
+          // console.log(req.body)
           const response = await axios.post(
             `${PATHOA_CONFIG.baseUrl}/aladdin/api/v1/merchant/price-plan`,
             {
