@@ -29,12 +29,11 @@ const client = new MongoClient(uri, {
 let pathaoAccessToken = '';
 let tokenExpirationTime = 0;
 const PATHOA_CONFIG = {
-  baseUrl: process.env.PATHAO_BASE_URL || 'https://api-hermes.pathao.com',
+  baseUrl: process.env.PATHAO_BASE_URL,
   storeId: process.env.PATHAO_STORE_ID,
-  defaultItemType: 2, // Parcel
-  defaultDeliveryType: 48, // Standard delivery
+  defaultItemType: 2,
+  defaultDeliveryType: 48,
 };
-
 // Pathao Token Middleware
 const verifyPathaoToken = async (req, res, next) => {
   const now = Date.now();
@@ -86,6 +85,27 @@ async function run() {
       const query = req.query;
       const result = await UserData.find(query).toArray();
       res.send(result[0]);
+    });
+
+    app.get('/users/:email', async (req, res) => {
+      try {
+        const email = req.params.email; // Get email from URL params
+
+        if (!email) {
+          return res.status(400).json({ error: 'Email parameter is required' });
+        }
+
+        const user = await UserData.findOne({ email }); // Find user by email
+
+        if (!user) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.json(user); // Send the user data
+      } catch (error) {
+        console.error('Error fetching user:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
     });
 
     app.post('/users', async (req, res) => {
@@ -276,37 +296,55 @@ async function run() {
       res.send(result);
     });
 
-    // -deepsik .................
 
-    // Pathao Routes
+    // acess token  
     app.get('/api/pathao/access-token', async (req, res) => {
       try {
+        console.log('Using base URL:', PATHOA_CONFIG.baseUrl);
+
         const response = await axios.post(
           `${PATHOA_CONFIG.baseUrl}/aladdin/api/v1/issue-token`,
           {
             client_id: process.env.PATHAO_CLIENT_ID,
             client_secret: process.env.PATHAO_CLIENT_SECRET,
-            grant_type: process.env.PATHAO_GRANT_TYPE || 'password',
+            grant_type: process.env.PATHAO_GRANT_TYPE,
             username: process.env.PATHAO_USERNAME,
             password: process.env.PATHAO_PASSWORD,
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
           }
         );
+
         pathaoAccessToken = response.data.access_token;
-        tokenExpirationTime =
-          Date.now() + response.data.expires_in * 1000 - 60000;
-        res.json({ success: true, token: pathaoAccessToken });
+
+        // Send a consistent response format
+        res.json({
+          success: true,
+          token: response.data,
+        });
       } catch (error) {
-        console.error(
-          'Pathao token error:',
-          error.response?.data || error.message
-        );
+        console.error('Pathao token error:', {
+          config: error.config,
+          response: {
+            status: error.response?.status,
+            data: error.response?.data,
+          },
+          message: error.message,
+        });
+
+        // Send error response
         res.status(500).json({
           success: false,
-          error: 'Failed to get Pathao token',
-          details: error.response?.data || error.message,
+          error: error.response?.data?.message || 'Failed to get access token',
         });
       }
     });
+
+    // cities 
 
     app.get('/api/pathao/cities', verifyPathaoToken, async (req, res) => {
       try {
@@ -326,6 +364,8 @@ async function run() {
         });
       }
     });
+
+    // zone 
 
     app.get(
       '/api/pathao/zones/:cityId',
@@ -349,7 +389,7 @@ async function run() {
         }
       }
     );
-
+//zone id
     app.get(
       '/api/pathao/areas/:zoneId',
       verifyPathaoToken,
@@ -373,6 +413,7 @@ async function run() {
       }
     );
 
+    // calculate price 
     app.post(
       '/api/pathao/calculate-price',
       verifyPathaoToken,
@@ -384,7 +425,7 @@ async function run() {
           const response = await axios.post(
             `${PATHOA_CONFIG.baseUrl}/aladdin/api/v1/merchant/price-plan`,
             {
-              store_id:148381,
+              store_id: 148381,
               // store_id: PATHOA_CONFIG.storeId,
               // item_type: PATHOA_CONFIG.defaultItemType,
               // delivery_type: PATHOA_CONFIG.defaultDeliveryType,
@@ -478,6 +519,7 @@ async function run() {
         }
       }
     );
+    
 
     // /..............................
 
