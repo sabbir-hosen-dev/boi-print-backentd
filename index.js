@@ -14,7 +14,7 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId  } = require('mongodb');
 const uri = process.env.MONGO_URL;
 
 const client = new MongoClient(uri, {
@@ -37,8 +37,10 @@ const PATHOA_CONFIG = {
 // Pathao Token Middleware
 const verifyPathaoToken = async (req, res, next) => {
   const now = Date.now();
+  console.log(`Token check - Current: ${pathaoAccessToken ? 'Exists' : 'Missing'}, Expires: ${new Date(tokenExpirationTime).toISOString()}`);
 
   if (!pathaoAccessToken || now >= tokenExpirationTime) {
+    console.log('Getting new Pathao token...');
     try {
       const response = await axios.post(
         `${PATHOA_CONFIG.baseUrl}/aladdin/api/v1/issue-token`,
@@ -52,13 +54,15 @@ const verifyPathaoToken = async (req, res, next) => {
       );
 
       pathaoAccessToken = response.data.access_token;
-      tokenExpirationTime = now + response.data.expires_in * 1000 - 60000; // 1 minute before expiration
+      tokenExpirationTime = now + response.data.expires_in * 1000 - 60000;
+      console.log(`New token acquired. Expires at: ${new Date(tokenExpirationTime).toISOString()}`);
       next();
     } catch (error) {
-      console.error(
-        'Failed to get Pathao token:',
-        error.response?.data || error.message
-      );
+      console.error('Failed to get Pathao token:', {
+        config: error.config,
+        response: error.response?.data,
+        message: error.message
+      });
       return res.status(500).json({
         success: false,
         error: 'Failed to initialize Pathao service',
@@ -66,6 +70,7 @@ const verifyPathaoToken = async (req, res, next) => {
       });
     }
   } else {
+    console.log('Using existing valid token');
     next();
   }
 };
@@ -80,6 +85,70 @@ async function run() {
     let BannerData = client.db('BoiPrint').collection('BannerData');
     let OrderData = client.db('BoiPrint').collection('OrderData');
     let BookPrintData = client.db('BoiPrint').collection('BookPrintData');
+
+
+
+
+    //-----------
+    app.get('/users/check-user', async (req, res) => {
+      try {
+        const { email } = req.query;
+        const user = await UserData.findOne({ email });
+        res.json({ exists: !!user, user: user || null });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+      }
+    });
+
+    app.post('/users', async (req, res) => {
+      try {
+        const { name, email, photo, uid, phoneNumber } = req.body;
+        
+        if (!name || !email || !uid) {
+          return res.status(400).json({ message: 'Missing required fields' });
+        }
+
+        const existingUser = await UserData.findOne({ email });
+        if (existingUser) {
+          if (phoneNumber) {
+            await UserData.updateOne(
+              { email },
+              { $set: { phoneNumber } }
+            );
+            existingUser.phoneNumber = phoneNumber;
+          }
+          return res.json({ 
+            message: existingUser.phoneNumber ? 'User logged in' : 'User exists',
+            user: existingUser 
+          });
+        }
+
+        const newUser = {
+          name,
+          email,
+          photo,
+          uid,
+          phoneNumber: phoneNumber || null,
+          role: 'user',
+          createdAt: new Date()
+        };
+
+        const result = await UserData.insertOne(newUser);
+        const createdUser = { ...newUser, _id: result.insertedId };
+
+        res.status(201).json({
+          message: 'User created successfully',
+          user: createdUser
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+      }
+    });
+    
+// Other existing routes...
+
 
     app.get('/users', async (req, res) => {
       const query = req.query;
@@ -279,13 +348,14 @@ async function run() {
       const { address } = await UserData.findOne({ email: data.email });
 
       const orderDetails = {
+        ...data,
         customerEmail: data.email,
         location: address,
         orderID: 'ORD-' + uuidv4().slice(0, 8),
         date: formattedDate,
         amount: data.totalPrice,
         status: 'Pending',
-        pdf: 'url',
+        pdf: data.pdfUrl,
         coverType: data.coverType,
         paperType: data.paperType,
         selectedSize: data.selectedSize,
@@ -296,11 +366,10 @@ async function run() {
       res.send(result);
     });
 
-
-    // acess token  
+    // acess token
     app.get('/api/pathao/access-token', async (req, res) => {
       try {
-        console.log('Using base URL:', PATHOA_CONFIG.baseUrl);
+        // console.log('Using base URL:', PATHOA_CONFIG.baseUrl);
 
         const response = await axios.post(
           `${PATHOA_CONFIG.baseUrl}/aladdin/api/v1/issue-token`,
@@ -344,8 +413,7 @@ async function run() {
       }
     });
 
-    // cities 
-
+    // cities
     app.get('/api/pathao/cities', verifyPathaoToken, async (req, res) => {
       try {
         const response = await axios.get(
@@ -365,7 +433,7 @@ async function run() {
       }
     });
 
-    // zone 
+    // zone
 
     app.get(
       '/api/pathao/zones/:cityId',
@@ -389,7 +457,7 @@ async function run() {
         }
       }
     );
-//zone id
+    //zone id
     app.get(
       '/api/pathao/areas/:zoneId',
       verifyPathaoToken,
@@ -413,7 +481,7 @@ async function run() {
       }
     );
 
-    // calculate price 
+    // calculate price
     app.post(
       '/api/pathao/calculate-price',
       verifyPathaoToken,
@@ -425,8 +493,8 @@ async function run() {
           const response = await axios.post(
             `${PATHOA_CONFIG.baseUrl}/aladdin/api/v1/merchant/price-plan`,
             {
-              store_id: 148381,
-              // store_id: PATHOA_CONFIG.storeId,
+              // store_id: 148381,
+              store_id: PATHOA_CONFIG.storeId,
               // item_type: PATHOA_CONFIG.defaultItemType,
               // delivery_type: PATHOA_CONFIG.defaultDeliveryType,
               item_type: 2,
@@ -453,73 +521,199 @@ async function run() {
       }
     );
 
-    app.post(
-      '/api/pathao/create-order',
-      verifyPathaoToken,
-      async (req, res) => {
-        try {
-          const { orderData } = req.body;
 
-          // First create local order
-          const orderResponse = await OrderData.insertOne({
-            ...orderData,
-            status: 'Pending',
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          });
 
-          // Then create Pathao order
-          const pathaoResponse = await axios.post(
-            `${PATHOA_CONFIG.baseUrl}/aladdin/api/v1/orders`,
-            {
-              store_id: PATHOA_CONFIG.storeId,
-              merchant_order_id: orderResponse.insertedId.toString(),
-              recipient_name: orderData.customerName,
-              recipient_phone: orderData.customerPhone,
-              recipient_address: orderData.deliveryAddress,
-              recipient_city: orderData.cityId,
-              recipient_zone: orderData.zoneId,
-              recipient_area: orderData.areaId,
-              delivery_type: PATHOA_CONFIG.defaultDeliveryType,
-              item_type: PATHOA_CONFIG.defaultItemType,
-              item_quantity: 1,
-              item_weight: orderData.itemWeight,
-              amount_to_collect: orderData.amountToCollect,
-              item_description: 'Printed books',
-            },
-            { headers: { Authorization: `Bearer ${pathaoAccessToken}` } }
-          );
+// order create endpoint
+app.post('/api/pathao/create-order', verifyPathaoToken, async (req, res) => {
+  const orderData = req.body.orderData;
 
-          // Update local order with Pathao info
-          await OrderData.updateOne(
-            { _id: orderResponse.insertedId },
-            {
-              $set: {
-                pathaoOrderId: pathaoResponse.data.data.order_id,
-                pathaoStatus: pathaoResponse.data.data.status,
-                courierInfo: pathaoResponse.data.data.courier_info,
-              },
-            }
-          );
+  try {
+    // Validate required fields with better error messages
+    const requiredFields = {
+      customerName: 'Recipient name',
+      customerPhone: 'Phone number',
+      deliveryAddress: 'Delivery address',
+      cityId: 'City',
+      zoneId: 'Zone',
+      areaId: 'Area'
+    };
 
-          res.json({
-            success: true,
-            orderId: orderResponse.insertedId,
-            pathaoOrder: pathaoResponse.data.data,
-          });
-        } catch (error) {
-          console.error(
-            'Pathao order creation error:',
-            error.response?.data || error.message
-          );
-          res.status(500).json({
-            error: 'Failed to create Pathao order',
-            details: error.response?.data || error.message,
-          });
-        }
+    const missingFields = Object.entries(requiredFields)
+      .filter(([field]) => !orderData[field])
+      .map(([_, name]) => name);
+
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missingFields.join(', ')}`,
+        code: 'MISSING_FIELDS'
+      });
+    }
+
+    // Validate phone number format
+    if (!/^01[3-9]\d{8}$/.test(orderData.customerPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid Bangladeshi phone number format (must be 11 digits starting with 01)',
+        code: 'INVALID_PHONE'
+      });
+    }
+
+    // Prepare Pathao payload
+    const pathaoPayload = {
+      store_id: process.env.PATHAO_STORE_ID || 148381, // Use env variable
+      merchant_order_id: `ORD-${Date.now()}`,
+      recipient_name: orderData.customerName,
+      recipient_phone: orderData.customerPhone,
+      recipient_address: `${orderData.deliveryAddress}, ${orderData.zoneName}, ${orderData.cityName}`,
+      recipient_city: Number(orderData.cityId),
+      recipient_zone: Number(orderData.zoneId),
+      recipient_area: Number(orderData.areaId),
+      delivery_type: 48, // Normal delivery
+      item_type: 2, // Parcel
+      item_quantity: orderData.quantity || 1,
+      item_weight: `${orderData.itemWeight || 1}`,
+      amount_to_collect: Math.round(Number(orderData.amountToCollect) || 0),
+      special_instruction: orderData.specialInstructions || 'Handle with care',
+      item_description: 'Printed materials'
+    };
+
+    // Create Pathao order
+    const pathaoResponse = await axios.post(
+      `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/orders`,
+      pathaoPayload,
+      {
+        headers: {
+          Authorization: `Bearer ${pathaoAccessToken}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
       }
     );
+
+    // Prepare MongoDB order document
+    const mongoOrder = {
+      customerEmail: orderData.customerEmail,
+      customerName: orderData.customerName,
+      customerPhone: orderData.customerPhone,
+      deliveryAddress: orderData.deliveryAddress,
+      cityId: orderData.cityId,
+      zoneId: orderData.zoneId,
+      areaId: orderData.areaId,
+      cityName: orderData.cityName,
+      zoneName: orderData.zoneName,
+      areaName: orderData.areaName,
+      orderID: `ORD-${uuidv4().slice(0, 8)}`,
+      date: new Date().toISOString(),
+      amount: orderData.amountToCollect,
+      status: 'Pending',
+      items: orderData.allData,
+      quantity: orderData.quantity,
+      weight: orderData.itemWeight,
+      paymentMethod: orderData.paymentMethod,
+      pathaoOrderId: pathaoResponse.data.data?.consignment_id,
+      pathaoMerchantOrderId: pathaoPayload.merchant_order_id,
+      pathaoStatus: pathaoResponse.data.data?.order_status || 'Pending',
+      deliveryFee: pathaoResponse.data.data?.delivery_fee || 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // Save to MongoDB
+    const mongoResult = await OrderData.insertOne(mongoOrder);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        pathaoOrder: pathaoResponse.data,
+        mongoOrder: {
+          insertedId: mongoResult.insertedId,
+          orderId: mongoOrder.orderID
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Order creation error:', {
+      error: error.response?.data || error.message,
+      stack: error.stack
+    });
+
+    let statusCode = 500;
+    let errorMessage = 'Order creation failed';
+    let errorDetails = null;
+
+    if (error.response) {
+      statusCode = error.response.status;
+      errorMessage = error.response.data?.message || errorMessage;
+      errorDetails = error.response.data?.errors;
+      
+      // Handle Pathao-specific errors
+      if (error.response.data?.errors) {
+        errorMessage = Object.entries(error.response.data.errors)
+          .map(([field, errors]) => `${field}: ${errors.join(', ')}`)
+          .join('; ');
+      }
+    } else if (error.code === 'ECONNABORTED') {
+      errorMessage = 'Request timeout - Pathao API took too long to respond';
+      statusCode = 504;
+    }
+
+    return res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      details: errorDetails,
+      code: error.response?.data?.code || 'ORDER_CREATION_FAILED'
+    });
+  }
+});
     
+    // app.post('/api/pathao/create-order', async (req, res) => {
+    //   try {
+    //     const data = req.body;
+    //     const date = new Date();
+    //     const formattedDate = date
+    //       .toLocaleDateString('en-GB')
+    //       .replace(/\//g, '-');
+    
+    //     const { address } = await UserData.findOne({ email: data.email });
+    
+    //     const orderDetails = {
+    //       ...data,
+    //       customerEmail: data.email,
+    //       location: address,
+    //       orderID: 'ORD-' + uuidv4().slice(0, 8),
+    //       date: formattedDate,
+    //       amount: data.totalPrice,
+    //       status: 'Pending',
+    //       pdf: data.pdfUrl,
+    //       coverType: data.coverType,
+    //       paperType: data.paperType,
+    //       selectedSize: data.selectedSize,
+    //       quantity: data.quantity,
+    //     };
+    
+    //     const result = await OrderData.insertOne(orderDetails);
+        
+    //     console.log('✅ Order successfully saved to MongoDB:', result);
+    //     res.status(200).json({ 
+    //       success: true, 
+    //       data: result 
+    //     });
+    
+    //   } catch (error) {
+    //     console.error('Error creating order:', {
+    //       message: error.message,
+    //       stack: error.stack,
+    //     });
+        
+    //     res.status(500).json({
+    //       success: false,
+    //       message: 'Failed to create order',
+    //       error: error.message
+    //     });
+    //   }
+    // });
 
     // /..............................
 
