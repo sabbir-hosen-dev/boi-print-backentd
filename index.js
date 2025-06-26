@@ -150,6 +150,31 @@ async function run() {
 // Other existing routes...
 
 
+app.patch('/update-address', async (req, res) => {
+  try {
+    const { email, address } = req.body;
+    
+    // Update ONLY the address field in the user document
+    const result = await User.findOneAndUpdate(
+      { email },
+      { 
+        $set: { 
+          'address': address // This updates just the address field
+        } 
+      },
+      { new: true }
+    );
+
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    res.json({ success: true, user: result });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
     app.get('/users', async (req, res) => {
       const query = req.query;
       const result = await UserData.find(query).toArray();
@@ -176,6 +201,21 @@ async function run() {
         res.status(500).json({ error: 'Internal server error' });
       }
     });
+
+// GET user address by email
+app.get("/address/:email", async (req, res) => {
+  try {
+    const email = req.params.email; 
+    const user = await UserData.findOne({ email: email }).select('address');
+    res.send(user)
+  } catch (error) {
+    console.error("Error fetching address:", error);
+    res.status(500).json({ 
+      error: "Internal server error",
+      details: error.message 
+    });
+  }
+});
 
     app.post('/users', async (req, res) => {
       const { email, phoneNumber } = req.body;
@@ -523,6 +563,145 @@ async function run() {
 
 
 
+    //mongodb oder save 
+    app.post('/api/pathao/save-order', verifyPathaoToken, async (req, res) => {
+  const orderData = req.body.orderData;
+
+  try {
+    const requiredFields = {
+      customerName: 'Recipient name',
+      customerPhone: 'Phone number',
+      deliveryAddress: 'Delivery address',
+      cityId: 'City',
+      zoneId: 'Zone',
+      areaId: 'Area'
+    };
+
+    const missingFields = Object.entries(requiredFields)
+      .filter(([field]) => !orderData[field])
+      .map(([_, name]) => name);
+
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missingFields.join(', ')}`,
+        code: 'MISSING_FIELDS'
+      });
+    }
+
+    const mongoOrder = {
+      customerEmail: orderData.customerEmail,
+      customerName: orderData.customerName,
+      customerPhone: orderData.customerPhone,
+      deliveryAddress: orderData.deliveryAddress,
+      cityId: orderData.cityId,
+      zoneId: orderData.zoneId,
+      areaId: orderData.areaId,
+      cityName: orderData.cityName,
+      zoneName: orderData.zoneName,
+      areaName: orderData.areaName,
+      orderID: `ORD-${uuidv4().slice(0, 8)}`,
+      date: new Date().toISOString(),
+      amount: orderData.amountToCollect,
+      status: 'Pending', // ❗ Only saved, not confirmed
+      items: orderData.allData,
+      quantity: orderData.quantity,
+      weight: orderData.itemWeight,
+      paymentMethod: orderData.paymentMethod,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const mongoResult = await OrderData.insertOne(mongoOrder);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Order saved. Awaiting confirmation.',
+      insertedId: mongoResult.insertedId,
+      orderId: mongoOrder.orderID
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save order',
+      error: error.message
+    });
+  }
+});
+
+// order create pathau 
+app.post('/api/pathao/confirm-order/:id', verifyPathaoToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const order = await OrderData.findOne({ _id: new ObjectId(id) });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    const pathaoPayload = {
+      store_id: process.env.PATHAO_STORE_ID || 148381,
+      merchant_order_id: `ORD-${Date.now()}`,
+      recipient_name: order.customerName,
+      recipient_phone: order.customerPhone,
+      recipient_address: `${order.deliveryAddress}, ${order.zoneName}, ${order.cityName}`,
+      recipient_city: Number(order.cityId),
+      recipient_zone: Number(order.zoneId),
+      recipient_area: Number(order.areaId),
+      delivery_type: 48,
+      item_type: 2,
+      item_quantity: order.quantity || 1,
+      item_weight: `${order.weight || 1}`,
+      amount_to_collect: Math.round(Number(order.amount) || 0),
+      special_instruction: 'Handle with care',
+      item_description: 'Printed materials'
+    };
+
+    const pathaoResponse = await axios.post(
+      `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/orders`,
+      pathaoPayload,
+      {
+        headers: {
+          Authorization: `Bearer ${pathaoAccessToken}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    await OrderData.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          pathaoOrderId: pathaoResponse.data.data?.consignment_id,
+          pathaoMerchantOrderId: pathaoPayload.merchant_order_id,
+          pathaoStatus: pathaoResponse.data.data?.order_status || 'Pending',
+          deliveryFee: pathaoResponse.data.data?.delivery_fee || 0,
+          status: 'Confirmed',
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Order confirmed and sent to Pathao',
+      pathaoOrder: pathaoResponse.data
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to confirm order',
+      error: error.response?.data || error.message
+    });
+  }
+});
+
+
+
+
+
 // order create endpoint
 app.post('/api/pathao/create-order', verifyPathaoToken, async (req, res) => {
   const orderData = req.body.orderData;
@@ -666,418 +845,23 @@ app.post('/api/pathao/create-order', verifyPathaoToken, async (req, res) => {
       code: error.response?.data?.code || 'ORDER_CREATION_FAILED'
     });
   }
+
+
+
 });
+
+
+
+
+
+
+
+
+
+
+
+
     
-    // app.post('/api/pathao/create-order', async (req, res) => {
-    //   try {
-    //     const data = req.body;
-    //     const date = new Date();
-    //     const formattedDate = date
-    //       .toLocaleDateString('en-GB')
-    //       .replace(/\//g, '-');
-    
-    //     const { address } = await UserData.findOne({ email: data.email });
-    
-    //     const orderDetails = {
-    //       ...data,
-    //       customerEmail: data.email,
-    //       location: address,
-    //       orderID: 'ORD-' + uuidv4().slice(0, 8),
-    //       date: formattedDate,
-    //       amount: data.totalPrice,
-    //       status: 'Pending',
-    //       pdf: data.pdfUrl,
-    //       coverType: data.coverType,
-    //       paperType: data.paperType,
-    //       selectedSize: data.selectedSize,
-    //       quantity: data.quantity,
-    //     };
-    
-    //     const result = await OrderData.insertOne(orderDetails);
-        
-    //     console.log('✅ Order successfully saved to MongoDB:', result);
-    //     res.status(200).json({ 
-    //       success: true, 
-    //       data: result 
-    //     });
-    
-    //   } catch (error) {
-    //     console.error('Error creating order:', {
-    //       message: error.message,
-    //       stack: error.stack,
-    //     });
-        
-    //     res.status(500).json({
-    //       success: false,
-    //       message: 'Failed to create order',
-    //       error: error.message
-    //     });
-    //   }
-    // });
-
-    // /..............................
-
-    // -------------------------------
-
-    // credientials
-
-    // // Replace these variables with the actual values you're working with
-    // const base_url = "https://api-hermes.pathao.com";  // Replace with the correct API URL
-    // const access_token = "YOUR_ACCESS_TOKEN";  // Replace with your actual access token
-    // const merchant_store_id = "254654";  // Replace with actual store ID
-    // const merchant_order_id = "ORD-8ef46e2e";  // Replace with actual order ID
-    // const city_id = "YOUR_CITY_ID";  // Replace with actual city ID
-    // const zone_id = "YOUR_ZONE_ID";  // Replace with actual zone ID
-    // const area_id = "YOUR_AREA_ID";  // Replace with actual area ID
-
-    // let access_token = "";
-
-    // app.get('/accessToken', async(req,res)=>{
-    //   const response = await axios.post(
-    //     `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/issue-token`,
-    //     {
-    //       client_id: process.env.PATHAO_CLIENT_ID,
-    //       client_secret: process.env.PATHAO_CLIENT_SECRET,
-    //       grant_type: process.env.PATHAO_GRANT_TYPE,
-    //       username: process.env.PATHAO_USERNAME,
-    //       password: process.env.PATHAO_PASSWORD,
-    //     },
-    //     {
-    //       headers: {
-    //         "Content-Type": "application/json",
-    //       },
-    //     }
-    //   );
-    //   access_token = response.data.access_token;
-    //   // console.log(access_token)
-
-    //   res.json(response.data);
-    // })
-
-    // app.get("/cityList", async(req,res)=>{
-    //   const response_city = await axios.get(
-    //     `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/city-list`,
-    //     {
-    //       headers: {
-    //         "Content-Type": "application/json; charset=UTF-8",
-    //         Authorization: `Bearer ${access_token}`,
-    //       },
-    //     }
-    //   );
-
-    //   const cityList = response_city.data.data.data;
-    //   res.send(cityList);
-    // });
-
-    // app.get("/zoneList", async(req,res)=>{
-    //   const city_info = {
-    //     "city_id": 1,
-    //     "city_name": "Dhaka"
-    //   };
-
-    //   // const city_info = req.body;
-
-    //   const response_zone = await axios.get(
-    //     `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/cities/${city_info.city_id}/zone-list`,
-    //     {
-    //       headers: {
-    //         "Content-Type": "application/json; charset=UTF-8",
-    //         Authorization: `Bearer ${access_token}`,
-    //       },
-    //     }
-    //   );
-    //   const zoneList = response_zone.data.data.data;
-
-    //   res.send(zoneList);
-    // });
-
-    // app.get("/areaList", async(req,res)=>{
-    //   const zone_info =   {
-    //     "zone_id": 944,
-    //     "zone_name": "Uttara Sector 13"
-    //   };
-
-    //   const response_area = await axios.get(
-    //     `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/zones/${zone_info.zone_id}/area-list`,
-    //     {
-    //       headers: {
-    //         "Content-Type": "application/json; charset=UTF-8",
-    //         Authorization: `Bearer ${access_token}`,
-    //       },
-    //     }
-    //   );
-    //   const allArea = response_area.data.data.data;
-    //   res.send(allArea);
-    // });
-
-    // app.get("/stores", async(req,res)=>{
-    //   // store id
-    //   const response_store_id = await axios.get(
-    //     `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/stores`, // Fetch stores list
-    //     {
-    //       headers: {
-    //         "Content-Type": "application/json; charset=UTF-8",
-    //         Authorization: `Bearer ${access_token}`, // Add Token to Header
-    //       },
-    //     });
-
-    //     res.send(response_store_id.data);
-    // });
-
-    //     app.get("/pathaoFinalOrder", async(req,res)=>{
-
-    //       // demo data
-    //       const city_info =   {
-    //         "city_id": 1,
-    //         "city_name": "Dhaka"
-    //       };
-    //       const zone_info =   {
-    //         "zone_id": 944,
-    //         "zone_name": "Uttara Sector 13"
-    //       };
-    //       const area_info =   {
-    //         "area_id": 15430,
-    //         "area_name": "Sector 13 Road 10",
-    //         "home_delivery_available": true,
-    //         "pickup_available": true
-    //       };
-
-    //       // price .....................
-    //       const orderDetails = {
-    //         store_id: 148381,
-    //         item_type: 2,
-    //         delivery_type: 48,
-    //         item_weight: 5,
-    //         recipient_city: city_info.city_id,
-    //         recipient_zone: zone_info.zone_id
-    //       }
-
-    //       const response_order = await axios.post(
-    //         `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/merchant/price-plan`, orderDetails,
-    //         {
-    //           headers: {
-    //             'Content-Type': 'application/json; charset=UTF-8',
-    //             'Authorization': `Bearer ${access_token}`
-    //           }
-    //         }
-    //       );
-
-    //       console.log(response_order.data.data);
-    //       console.log(response_order.data.data.final_price);
-
-    //       // Order Details
-    //       const bookPrice = 1000; // Book printing price customer
-    //       const deliveryCharge = response_order.data.data.price; // Pathao's delivery charge
-    //       const codCharge = (bookPrice * response_order.data.data.cod_percentage) / 100; // COD handling charge
-    //       const totalPayable = bookPrice + deliveryCharge + codCharge; // Total amount customer pays
-
-    //       console.log(totalPayable);
-
-    // // .........................................................
-
-    //       const orderData = {
-    //         store_id: 148381, // Must be valid
-    //         merchant_order_id: "ORD-"+uuidv4().slice(0, 8), // Must be unique for each request
-    //         recipient_name: "Naeem",
-    //         recipient_phone: "01688399463",
-    //         recipient_address: "Uttara , Sector -24, Dhaka",
-    //         recipient_city: city_info.city_id, // Ensure this is valid
-    //         recipient_zone: zone_info.zone_id, // Ensure this is valid
-    //         recipient_area: area_info.area_id, // Ensure this is valid
-    //         delivery_type: 48,
-    //         item_type: 2, // Parcel
-    //         special_instruction: "Handle with care.",
-    //         item_quantity: 1,
-    //         item_weight: 5, // Try using grams if 5kg is invalid
-    //         item_description: "5 printed books",
-    //         amount_to_collect: totalPayable, // Remove if not using COD
-    //       };
-
-    //       const response_orderData = await axios.post(
-    //         `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/orders`,
-    //         orderData,
-    //         {
-    //           headers: {
-    //             "Content-Type": "application/json",
-    //             Authorization: `Bearer ${access_token}`,
-    //           },
-    //         }
-    //       );
-
-    //       res.send({"response_orderData":response_orderData.data,
-    //         "response_order": response_order.data
-    //       });
-    //     })
-
-    // // pathao access token api
-    // app.get("/accessToken", async (req, res) => {
-    //   try {
-    //     // const response = await axios.post(
-    //     //   `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/issue-token`,
-    //     //   {
-    //     //     client_id: process.env.PATHAO_CLIENT_ID,
-    //     //     client_secret: process.env.PATHAO_CLIENT_SECRET,
-    //     //     grant_type: process.env.PATHAO_GRANT_TYPE,
-    //     //     username: process.env.PATHAO_USERNAME,
-    //     //     password: process.env.PATHAO_PASSWORD,
-    //     //   },
-    //     //   {
-    //     //     headers: {
-    //     //       "Content-Type": "application/json",
-    //     //     },
-    //     //   }
-    //     // );
-    //     // // console.log(response.data);
-    //     // const access_token = response.data.access_token;
-    //     // // console.log(access_token)
-
-    //     // // res.json(response.data);
-
-    //     const current_city = "Dhaka";
-    //     const current_zone = "Uttara Sector 13";
-    //     const current_area = "Sector 13 Road 15";
-
-    //     const response_city = await axios.get(
-    //       `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/city-list`,
-    //       {
-    //         headers: {
-    //           "Content-Type": "application/json; charset=UTF-8",
-    //           Authorization: `Bearer ${response.data.access_token}`,
-    //         },
-    //       }
-    //     );
-    //     // res.send(response_city.data);
-
-    //     // console.log("City List:", response_city.data.data);
-
-    //     const allCities = response_city.data.data.data;
-
-    //     const city_info = allCities.find(city=>city.city_name.toLowerCase() === current_city.toLowerCase());
-    //     // console.log(city_info.city_id);
-
-    //     // allCities.map(city=>console.log(city.city_name.toLowerCase()));
-
-    //     // response zone
-    //     const response_zone = await axios.get(
-    //       `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/cities/${city_info.city_id}/zone-list`,
-    //       {
-    //         headers: {
-    //           "Content-Type": "application/json; charset=UTF-8",
-    //           Authorization: `Bearer ${response.data.access_token}`,
-    //         },
-    //       }
-    //     );
-    //     const allZone = response_zone.data.data.data;
-    //     const zone_info = allZone.find(zone=>zone.zone_name.toLowerCase() === current_zone.toLowerCase());
-    //     // console.log(zone_info);
-    //       // res.send(response_zone.data);
-
-    //     // response area
-    //     const response_area = await axios.get(
-    //       `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/zones/${zone_info.zone_id}/area-list`,
-    //       {
-    //         headers: {
-    //           "Content-Type": "application/json; charset=UTF-8",
-    //           Authorization: `Bearer ${response.data.access_token}`,
-    //         },
-    //       }
-    //     );
-    //     const allArea = response_area.data.data.data;
-    //     const area_info = allArea.find(area=>area.area_name.toLowerCase() === current_area.toLowerCase());
-    //     console.log(area_info);
-
-    //     // res.send(response_area.data);
-
-    //     // // store id
-    //     // const response_store_id = await axios.get(
-    //     //   `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/stores`, // Fetch stores list
-    //     //   {
-    //     //     headers: {
-    //     //       "Content-Type": "application/json; charset=UTF-8",
-    //     //       Authorization: `Bearer ${access_token}`, // Add Token to Header
-    //     //     },
-    //     //   });
-
-    //     //   res.send(response_store_id.data);
-
-    //     // new order data
-    //     const orderData = {
-    //       store_id: 148381, // Must be valid
-    //       merchant_order_id: `ORD-ec348c88`, // Must be unique for each request
-    //       recipient_name: "Naeem",
-    //       recipient_phone: "01688399463",
-    //       recipient_address: "Uttara , Sector -24, Dhaka",
-    //       recipient_city: city_info.city_id, // Ensure this is valid
-    //       recipient_zone: zone_info.zone_id, // Ensure this is valid
-    //       recipient_area: area_info.area_id, // Ensure this is valid
-    //       delivery_type: 48,
-    //       item_type: 2, // Parcel
-    //       special_instruction: "Handle with care.",
-    //       item_quantity: 1,
-    //       item_weight: 2, // Try using grams if 5kg is invalid
-    //       item_description: "5 printed books",
-    //       amount_to_collect: 1000, // Remove if not using COD
-    //     };
-
-    //     console.log(orderData)
-
-    //     const response_orderData = await axios.post(
-    //       `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/orders`,
-    //       orderData,
-    //       {
-    //         headers: {
-    //           "Content-Type": "application/json",
-    //           Authorization: `Bearer ${access_token}`,
-    //         },
-    //       }
-    //     );
-
-    //     res.send(response_orderData.data);
-
-    //     // price
-    //     const orderDetails = {
-    //       store_id: 148381,
-    //       item_type: 2,
-    //       delivery_type: 48,
-    //       item_weight: 5,
-    //       recipient_city: city_info.city_id,
-    //       recipient_zone: zone_info.zone_id
-    //     }
-
-    //     const response_order = await axios.post(
-    //       `${process.env.PATHAO_BASE_URL}/aladdin/api/v1/merchant/price-plan`, orderDetails,
-    //       {
-    //         headers: {
-    //           'Content-Type': 'application/json; charset=UTF-8',
-    //           'Authorization': `Bearer ${access_token}`
-    //         }
-    //       }
-    //     );
-
-    //     console.log(response_order.data.data);
-    //     console.log(response_order.data.data.final_price);
-    //     res.json(response_order.data);
-
-    //     // Order Details
-    //     const bookPrice = 1000; // Book printing price customer
-    //     const deliveryCharge = response_order.data.data.price; // Pathao's delivery charge
-    //     const codCharge = (bookPrice * response_order.data.data.cod_percentage) / 100; // COD handling charge
-    //     const totalPayable = bookPrice + deliveryCharge + codCharge; // Total amount customer pays
-
-    //     console.log(totalPayable);
-
-    //   } catch (error) {
-    //     console.error(error.message);
-    //     res.status(500).json({ error: error.message});
-    //   }
-    // });
-
-    // -------------------------------------
-
-    // Send a ping to confirm a successful connection
-    // await client.db("admin").command({ ping: 1 });
-    // console.log("Pinged your deployment. You successfully connected to MongoDB!");
-
     app.get('/', (req, res) => {
       res.send('Root route is running');
     });

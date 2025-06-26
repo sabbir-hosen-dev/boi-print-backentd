@@ -250,3 +250,40 @@ async function run() {
 }
 
 run().catch(console.dir);
+
+
+// {
+//   "customerEmail": "tssabbirhosen@gmail.com",
+//   "customerName": "Sabbir Hosen",
+//   "customerPhone": "01345789098",
+//   "deliveryAddress": "elenga ",
+//   "cityId": "17",
+//   "zoneId": "915",
+//   "areaId": "20396",
+//   "cityName": "Barisal",
+//   "zoneName": "Bakergonj",
+//   "areaName": "Kanki",
+//   "quantity": 2,
+//   "itemWeight": "1",
+//   "amountToCollect": 441.4,
+//   "paymentMethod": "cash on delivery",
+//   "allData": {
+//       "pdfUrl": "http://res.cloudinary.com/dildam1ts/image/upload/v1745299630/r5uw9hsq7pauwffigdep.pdf",
+//       "size": "A5",
+//       "paper": {
+//           "title": "Grayscale Print",
+//           "banglaTitle": "সাদা-কালো প্রিন্ট",
+//           "price": 0.7
+//       },
+//       "cover": {
+//           "title": "Hard cover",
+//           "price": 155,
+//           "img": "https://i.ibb.co.com/Swt3H8Vm/Hardcover-Book.png"
+//       },
+//       "quantity": 2,
+//       "totalPrce": 311.4,
+//       "discountPrice": 311.4,
+//       "finalPrice": 441.4
+//   },
+//   "specialInstructions": "Handle with care"
+// }
